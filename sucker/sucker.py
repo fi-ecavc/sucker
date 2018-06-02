@@ -11,7 +11,7 @@ from watchdog.events import FileSystemEventHandler
 
 
 logging.basicConfig(format='%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-logger = logging.getLogger('fsuck')
+logger = logging.getLogger('sucker')
 logger.setLevel(logging.INFO)
 
 

@@ -12,11 +12,40 @@ from watchdog.events import FileSystemEventHandler
 
 logging.basicConfig(format='%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 logger = logging.getLogger('sucker')
-logger.setLevel(logging.INFO)
+#logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
+filelist = []
+
+class cfgmgr(object):
+    """ read configuration file sucker.cfg, mapping to cfg dictionary.
+    """
+    _singleton = None
+    cfg = {} 
+
+    def __new__(cls, *args, **kw):
+        if not cls._singleton:
+            cls._singleton = super(cfgmgr, cls).__new__(cls)
+        return cls._singleton
+
+    def __init__(self, cfgfile):
+        self.parse_cfg(cfgfile)
+
+    @classmethod
+    def parse_cfg(cls, cfgfile):
+        conf = ConfigParser.ConfigParser()
+        conf.read(cfgfile)
+        secs = conf.sections()
+        for sec in secs:
+            for (nm, val) in conf.items(sec):
+                cls.cfg[nm] = val
+
+    def __getitem__(self, key):
+        return self.cfg[key]
+        
 
 class remoteconn(object):
-    """create a connection and transfer file to remote server via paramiko module
+    """ create a connection and transfer file to remote server via paramiko module
     """
     _singleton = None
     def __new__(cls, *args, **kw):
@@ -28,23 +57,24 @@ class remoteconn(object):
         try:
             self.rc = paramiko.Transport((host, port))
             self.rc.connect(username = user, password = pwd)
-            self._isconn = True
-        except Exception:
-            self._isconn = False
-            logger.debug("remote connection to remote server failed")
+        except Exception as e:
+            logger.debug("connection to remote server failed: %s" % e)
 
     @property
     def get_destpath(self):
-        # todo: get the info of remote server via config file
-        return "/home/vcs/testfsuck" 
+        """ only consider the remote server is linux 
+        """
+        cfg = cfgmgr('sucker.cfg')
+        return '/home/' + '/'.join([cfg['remote_user']] + cfg['remote_dir'].split('/')[1:])
 
     def transfer_file(self, srcpath):
-        filenm = os.path.split(srcpath)[1]
-        # judge the remote server is linux or windows
-        if self.get_destpath.startswith('/'):
-            destpath = self.get_destpath + '/' + filenm
-        else:
-            destpath = self.get_destpath + '\\' + filenm
+        filenm = os.path.basename(srcpath)
+        destpath = self.get_destpath
+        if not os.path.isdir(destpath):
+            ssh = paramiko.SSHClient()
+            ssh._transport = self.rc
+            stdin, stdout, stderr = ssh.exec_command('mkdir -p ' + destpath)
+        destpath = destpath + '/' + filenm
         logger.debug("copy srcpath: %s to destpath: %s" % (srcpath, destpath))
         sftp = paramiko.SFTPClient.from_transport(self.rc)
         sftp.put(srcpath, destpath) 
@@ -59,18 +89,24 @@ class filesuckhandler(FileSystemEventHandler):
         self.rc = rc
 
     def on_created(self, event):
+        global filelist
+        filelist.append(event.src_path)
+        # todo: transfer file via filelist orderly
         self.rc.transfer_file(event.src_path)
 
 
 def main():
-    # todo: get the info of remote server via config file
-    monpath="E:\\testfsuck"
-    host, port, user, pwd = ("192.168.137.3", 22, "vcs", "vcs")
-    rc = remoteconn(host, port, user, pwd)
+    cfg = cfgmgr('sucker.cfg')
+    host, port, user, pwd = [cfg['remote_' + p] for p in ('host', 'port', 'user', 'pwd')]
+    logger.debug("%s@%s:%s" % (user, host, port))
+    rc = remoteconn(host, int(port), user, pwd)
     fsuckhandler = filesuckhandler(rc)
 
     observer = Observer()
-    observer.schedule(fsuckhandler, monpath, recursive=True)
+    mondir = cfg['mondir']
+    if not os.path.isdir(mondir):
+        os.makedirs(mondir)
+    observer.schedule(fsuckhandler, mondir, recursive=True)
     observer.start()
 
     try:

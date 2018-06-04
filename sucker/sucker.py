@@ -2,6 +2,7 @@
 # -*- coding:utf-8 -*-
 
 import os
+import copy
 import time
 import logging
 import paramiko
@@ -9,16 +10,20 @@ import ConfigParser
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-
-logging.basicConfig(format='%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-logger = logging.getLogger('sucker')
-#logger.setLevel(logging.INFO)
-logger.setLevel(logging.DEBUG)
-
+cfgfile = 'sucker.cfg'
 filelist = []
+remotedir = None
+logger = None
+
+def setlog(filenm):
+    global logger
+    logging.basicConfig(format='%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S', filename=filenm)
+    logger = logging.getLogger('sucker')
+    logger.setLevel(logging.INFO)
+
 
 class cfgmgr(object):
-    """ read configuration file sucker.cfg, mapping to cfg dictionary.
+    """ read configuration file, mapping to cfg dictionary.
     """
     _singleton = None
     cfg = {} 
@@ -54,30 +59,45 @@ class remoteconn(object):
         return cls._singleton
 
     def __init__(self, host, port, user, pwd):
-        try:
             self.rc = paramiko.Transport((host, port))
             self.rc.connect(username = user, password = pwd)
-        except Exception as e:
-            logger.debug("connection to remote server failed: %s" % e)
 
     @property
     def get_destpath(self):
         """ only consider the remote server is linux 
         """
-        cfg = cfgmgr('sucker.cfg')
+        global cfgfile
+        cfg = cfgmgr(cfgfile)
         return '/home/' + '/'.join([cfg['remote_user']] + cfg['remote_dir'].split('/')[1:])
 
-    def transfer_file(self, srcpath):
-        filenm = os.path.basename(srcpath)
-        destpath = self.get_destpath
-        if not os.path.isdir(destpath):
+    def transfer_file(self, flist):
+        global cfgfile
+        global remotedir
+        # deepcopy filelist
+        flist = copy.deepcopy(flist)
+        if not remotedir:
             ssh = paramiko.SSHClient()
             ssh._transport = self.rc
-            stdin, stdout, stderr = ssh.exec_command('mkdir -p ' + destpath)
-        destpath = destpath + '/' + filenm
-        logger.debug("copy srcpath: %s to destpath: %s" % (srcpath, destpath))
-        sftp = paramiko.SFTPClient.from_transport(self.rc)
-        sftp.put(srcpath, destpath) 
+            destpath = self.get_destpath
+            stdin, stdout, stderr = ssh.exec_command('ll -d ' + destpath)
+            if stdout.readline() == '':
+                stdin, stdout, stderr = ssh.exec_command('mkdir -p ' + destpath)
+            remotedir = destpath
+
+        for srcpath in flist:
+            filenm = os.path.basename(srcpath)
+            destpath = remotedir + '/' + filenm
+            try:
+                sftp = paramiko.SFTPClient.from_transport(self.rc)
+                sftp.put(srcpath, destpath) 
+                filelist.remove(srcpath)
+            except:
+                cfg = cfgmgr(cfgfile)
+                host, port, user, pwd = [cfg['remote_' + p] for p in ('host', 'port', 'user', 'pwd')]
+                fsuckhandler = connagain(host, int(port), user, pwd)
+                break
+                
+            logger.info("copy srcpath: %s to destpath: %s" % (srcpath, destpath))
 
 
 class filesuckhandler(FileSystemEventHandler):
@@ -91,16 +111,36 @@ class filesuckhandler(FileSystemEventHandler):
     def on_created(self, event):
         global filelist
         filelist.append(event.src_path)
-        # todo: transfer file via filelist orderly
-        self.rc.transfer_file(event.src_path)
+        # transfer file via filelist orderly
+        try:
+            self.rc.transfer_file(filelist)
+        except:
+            pass
 
+def connagain(host, port, user, pwd):
+    cfg = cfgmgr(cfgfile)
+    while True:
+        try:
+            rc = remoteconn(host, port, user, pwd)
+            break
+        except Exception as e:
+            logger.info("connection to remote server failed: %s" % e)
+            timeout = cfg['conntimeout']
+            time.sleep(timeout)
+    logger.info("connection to remote server successful")
+    return filesuckhandler(rc)
 
 def main():
-    cfg = cfgmgr('sucker.cfg')
+    cfg = cfgmgr(cfgfile)
+
+    logfile = cfg['logfile']
+    logdir = os.path.dirname(logfile)
+    if logdir and not os.path.isdir(logdir):
+        os.makedirs(logdir)
+    setlog(logfile)
     host, port, user, pwd = [cfg['remote_' + p] for p in ('host', 'port', 'user', 'pwd')]
-    logger.debug("%s@%s:%s" % (user, host, port))
-    rc = remoteconn(host, int(port), user, pwd)
-    fsuckhandler = filesuckhandler(rc)
+    logger.info("%s@%s:%s" % (user, host, port))
+    fsuckhandler = connagain(host, int(port), user, pwd)
 
     observer = Observer()
     mondir = cfg['mondir']

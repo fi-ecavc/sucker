@@ -69,7 +69,7 @@ class remoteconn(object):
         global cfgfile
         cfg = cfgmgr(cfgfile)
         #return '/home/' + '/'.join([cfg['remote_user']] + cfg['remote_dir'].split('/')[1:])
-        return '/home/' + '/'.join([cfg['remote_user'], 'data', cfg['suckerid']])
+        return '/home/' + '/'.join([cfg['remote_user'], 'suckerdata', cfg['suckerid']])
 
     def transfer_file(self, flist):
         global cfgfile
